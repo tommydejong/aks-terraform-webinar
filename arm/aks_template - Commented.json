@@ -1,0 +1,143 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    // Check for latest schema template with latest features here: https://docs.microsoft.com/en-us/azure/templates/microsoft.containerservice/managedclusters
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "clustername": {
+            "defaultValue": "",
+            "type": "String"
+        },
+        "vnetSubnetID": {
+            "defaultValue": "",
+            "type": "String"
+        },
+        "location": {
+            "defaultValue": "westeurope",
+            "type": "String"
+        },
+        "servicePrincipalID": {
+            "defaultValue": "",
+            "type": "String"
+        },
+        "servicePrincipalSecret": {
+            "defaultValue": "",
+            "type": "String"
+        },
+        "k8sVersion": {
+            "defaultValue": "1.17.9",
+            "type": "String"
+        }
+    },
+    "variables": {
+    },
+    "resources": [
+        {
+            "type": "Microsoft.ContainerService/managedClusters",
+            "apiVersion": "2020-07-01",
+            "name": "[parameters('clustername')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "kubernetesVersion": "[parameters('k8sVersion')]",
+                "dnsPrefix": "[concat(parameters('clustername'), '-dns')]",
+                // Define the system agent pool here
+                "agentPoolProfiles": [
+                    {
+                        "name": "system",
+                        "count": 1,
+                        "mode":"System", // New AKS feature: System or User mode
+                        "vmSize": "Standard_B2ms", // Burst machines are cheaper in non-peak hours
+                        "osDiskSizeGB": 128, // Ensure enough ephemeral storage
+                        "vnetSubnetID": "[parameters('vnetSubnetID')]", // The 'subnet' variable in Terraform is used here
+                        "maxPods": 150, // Set this high enough
+                        "type": "VirtualMachineScaleSets", // Autoscaler
+                        "maxCount": 2,
+                        "minCount": 1,
+                        "enableAutoScaling": true,
+                        "orchestratorVersion": "[parameters('k8sVersion')]", // Kubernetes version
+                        "osType": "Linux",
+                        "nodeLabels": {
+                            "istio":"enabled" // To ensure that Istio is run on these nodes
+                        }
+                    }
+                ],
+                "servicePrincipalProfile": { // The service principal you create for AKS, passed on by Terraform 
+                    "clientId": "[parameters('servicePrincipalID')]",
+                    "secret": "[parameters('servicePrincipalSecret')]"
+                },  
+                "addonProfiles": {
+                    "httpapplicationrouting": { // Not needed since we will use NGINX
+                        "enabled": false,
+                        "config": {}
+                    },
+                    "kubeDashboard": {
+                        "enabled": false
+                    },
+                    "omsagent": { // Monitoring extension. Generates a lot of data, so is very expensive. Is also built-in to Rancher using Prometheus and Grafana.
+                        "enabled": false
+                        }
+                    },
+                "nodeResourceGroup": "[concat('MC_', parameters('clustername'), '-rg_', parameters('clustername'), '_', parameters('location'))]", // Default values
+                "enableRBAC": true,
+                "networkProfile": {
+                    "networkPlugin": "azure", // Best integration with Azure. Can also be Kubenet 
+                    "loadBalancerSku": "Basic", // The load balancer SKU when a LB is created in Azure. We need standard in order to have multiple frontend IP addresses
+                    "serviceCidr": "10.21.0.0/16", // Default values
+                    "dnsServiceIP": "10.21.0.250", // Default values
+                    "dockerBridgeCidr": "172.17.0.1/16", // Default values
+                    "outboundType": "loadBalancer" // Default values
+                }
+            }
+        },
+        { // Define the agent pools in an array here
+            "type": "Microsoft.ContainerService/managedClusters/agentPools",
+            "apiVersion": "2020-03-01",
+            "name": "[concat(parameters('clustername'), '/boost')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.ContainerService/managedClusters', parameters('clustername'))]"
+            ],
+            "properties": {
+                "name": "boost",
+                "mode":"User", // User mode instead of System mode             
+                "count": 1,
+                "vmSize": "Standard_B2ms",
+                "osDiskSizeGB": 128,
+                "storageProfile": "Ephemeral",
+                "vnetSubnetID": "[parameters('vnetSubnetID')]",
+                "maxPods": 150,
+                "type": "VirtualMachineScaleSets",
+                "maxCount": 2,
+                "minCount": 1,
+                "enableAutoScaling": true,
+                "orchestratorVersion": "[parameters('k8sVersion')]",
+                "osType": "Linux"
+            }
+         }
+         ,
+         {
+            "type": "Microsoft.ContainerService/managedClusters/agentPools",
+            "apiVersion": "2020-03-01",
+            "name": "[concat(parameters('clustername'), '/memoptimized')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.ContainerService/managedClusters', parameters('clustername'))]"
+            ],
+            "properties": {
+                "name": "memoptimized",
+                "mode":"User",           
+                "count": 1,
+                "vmSize": "Standard_E8s_v3",
+                "osDiskSizeGB": 128,
+                "storageProfile": "Ephemeral",
+                "vnetSubnetID": "[parameters('vnetSubnetID')]",
+                "maxPods": 150,
+                "type": "VirtualMachineScaleSets",
+                "maxCount": 3,
+                "minCount": 1,
+                "enableAutoScaling": true,
+                "orchestratorVersion": "[parameters('k8sVersion')]",
+                "osType": "Linux"
+            }
+         }
+    ],
+    "outputs": {
+    }
+}
